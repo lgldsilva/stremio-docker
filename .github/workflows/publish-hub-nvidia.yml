@@ -26,6 +26,8 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v3
@@ -95,6 +97,7 @@ jobs:
 
   push:
     runs-on: ubuntu-latest
+    permissions: {}
     needs:
       - build
     services:
@@ -139,7 +142,7 @@ jobs:
                 echo "Attempt $i failed, waiting $wait_time seconds before retry..."
                 sleep $wait_time
               else
-                echo "All 3 attempts failed"
+                echo "All 3 attempts to create and push manifest list failed"
                 exit 1
               fi
             fi
