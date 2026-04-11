@@ -1,0 +1,150 @@
+name: DockerHub-Nvidia
+
+on:
+  workflow_dispatch:
+    inputs:
+      INPUT_VERSION:
+        description: 'New version to release'
+        required: false
+        default: ''
+  schedule:
+    - cron: "0 4 * * *"
+  push:
+    branches:
+      - main
+    paths:
+      - "Dockerfile.nvidia"
+
+env:
+  TMP_LOCAL_IMAGE: localhost:5000/${{ github.repository }}
+  REGISTRY_IMAGE: ${{ github.repository }}
+  REGISTRY_TAG: latest-nvidia
+  WEBREPO: "https://github.com/Stremio/stremio-web.git"
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  INPUT_VERSION: ${{ github.event.inputs.INPUT_VERSION }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Prepare
+        run: |
+          mkdir -p /tmp/images
+          echo "TARFILE=linux-amd64.tar" >> $GITHUB_ENV
+          echo "TAG=${{ env.TMP_LOCAL_IMAGE }}:linux-amd64" >> $GITHUB_ENV
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Build
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: Dockerfile.nvidia
+          platforms: linux/amd64
+          tags: ${{ env.TMP_LOCAL_IMAGE }}:linux-amd64
+          build-args: |
+            BRANCH=release
+            VERSION=${{ env.INPUT_VERSION || env.REGISTRY_TAG }}
+          outputs: type=docker,dest=/tmp/images/linux-amd64.tar
+
+      - name: Load images
+        run: |
+          for image in /tmp/images/*.tar; do
+            docker load -i $image
+          done
+
+      - name: Setup environment
+        run: |
+          npm install @playwright/test
+          npx playwright install --with-deps
+          docker network create --subnet=172.18.0.0/24 custom_network
+          echo "172.18.0.3 172-18-0-3.519b6502d940.stremio.rocks" | sudo tee -a /etc/hosts
+
+      - name: Run Docker Container and Test (1st run)
+        run: |
+          docker run -d --network custom_network --ip 172.18.0.3 -e NO_CORS=1 -e CASTING_DISABLED=1 ${{ env.TMP_LOCAL_IMAGE }}:linux-amd64
+
+          cd tests
+          sleep 15 # wait for server to startup
+
+          CONTAINER_ID=$(docker ps -a | grep stremio | awk '{print $1}')
+          docker exec "$CONTAINER_ID" cat /etc/nginx/http.d/default.conf
+          docker exec "$CONTAINER_ID" ps aux
+          docker logs "$CONTAINER_ID"
+
+          npx playwright test settings.spec --timeout=60000 || (
+            docker ps -a;
+            docker logs "$CONTAINER_ID";
+            exit 1;
+          )
+          docker logs "$CONTAINER_ID";
+          docker stop "$CONTAINER_ID"
+          docker rm "$CONTAINER_ID"
+
+      - name: Upload image
+        uses: actions/upload-artifact@v4
+        with:
+          name: images-nvidia
+          path: /tmp/images/linux-amd64.tar
+          if-no-files-found: error
+          retention-days: 1
+
+  push:
+    runs-on: ubuntu-latest
+    needs:
+      - build
+    services:
+      registry:
+        image: registry:2
+        ports:
+          - 5000:5000
+    steps:
+      - name: Download images
+        uses: actions/download-artifact@v4
+        with:
+          name: images-nvidia
+          path: /tmp/images
+
+      - name: Load images
+        run: |
+          for image in /tmp/images/*.tar; do
+            docker load -i $image
+          done
+
+      - name: Push images to local registry
+        run: |
+          docker push -a ${{ env.TMP_LOCAL_IMAGE }}
+
+      - name: Login to DockerHUB
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_PASS }}
+
+      - name: Create manifest list and push
+        run: |
+          for i in {1..3}; do
+            echo "Attempt $i/3: Creating manifest list and pushing..."
+            if docker buildx imagetools create -t ${{ env.REGISTRY_IMAGE }}:${{ env.REGISTRY_TAG }} \
+              $(docker image ls --format '{{.Repository}}:{{.Tag}}' '${{ env.TMP_LOCAL_IMAGE }}' | tr '\n' ' '); then
+              echo "Push successful on attempt $i"
+              break
+            else
+              if [ $i -lt 3 ]; then
+                wait_time=$((30 * i))
+                echo "Attempt $i failed, waiting $wait_time seconds before retry..."
+                sleep $wait_time
+              else
+                echo "All 3 attempts failed"
+                exit 1
+              fi
+            fi
+          done
+
+      - name: Inspect image
+        run: |
+          docker buildx imagetools inspect ${{ env.REGISTRY_IMAGE }}:${{ env.REGISTRY_TAG }}
