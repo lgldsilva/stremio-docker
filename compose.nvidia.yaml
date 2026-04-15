@@ -1,0 +1,19 @@
+services:
+  stremio:
+    image: tsaridas/stremio-docker:latest-nvidia
+    restart: unless-stopped
+    environment:
+      NO_CORS: 1
+      AUTO_SERVER_URL: 1
+      #IPADDRESS: 192.168.1.10 # Setup your ip address here
+    ports:
+      - "8080:8080"
+    volumes:
+      - "./stremio-data:/root/.stremio-server"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, video]

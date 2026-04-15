@@ -15,7 +15,7 @@ I built this to run Stremio on my Raspberry Pi 5 and couldn't find something tha
 - **Automatic Server Configuration:** Use `AUTO_SERVER_URL` or `SERVER_URL` to automatically configure the streaming server URL in the web player.
 - **HTTPS Out-of-the-Box:** Automatically generates and uses SSL certificates when an `IPADDRESS` is provided.
 - **Custom Certificates:** Supports using your own domain and SSL certificates.
-- **Hardware Acceleration:** Includes ffmpeg with VAAPI support for Intel and AMD GPUs.
+- **Hardware Acceleration:** Includes ffmpeg with VAAPI support for Intel and AMD GPUs, and a separate image with NVENC/NVDEC support for NVIDIA GPUs.
 - **Cross-Platform:** Builds are available for `amd64`, `arm/v6`, `arm/v7`, `arm64/v8`, and `ppc64le`.
 - **HTTP Basic Auth:** Secure your instance with a username and password.
 
@@ -217,6 +217,33 @@ docker run -d \
   tsaridas/stremio-docker:latest
 ```
 
+**Support for NVIDIA GPU Transcoding (NVENC/NVDEC)**
+
+For NVIDIA GPU hardware transcoding, use the `latest-nvidia` image which includes ffmpeg compiled with NVENC/NVDEC support. You must have the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) installed on the host.
+
+**Docker Compose** (use `compose.nvidia.yaml`):
+```yaml
+services:
+  stremio:
+    image: tsaridas/stremio-docker:latest-nvidia
+    # ... your other config
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, video]
+```
+
+**Docker CLI:**
+```bash
+docker run -d \
+  # ... your other flags
+  --gpus all \
+  tsaridas/stremio-docker:latest-nvidia
+```
+
 ### Builds
 
 Builds are created for the following architectures:
@@ -230,6 +257,7 @@ Images are automatically built and tested on pull requests using GitHub Actions.
 
 **Build tags:**
 - `latest`: Builds when a new version of the server or Web Player is released.
+- `latest-nvidia`: Same as `latest` but with ffmpeg compiled with NVENC/NVDEC for NVIDIA GPU transcoding.
 - `nightly`: Builds daily from the development branch of the web player.
 - `vX.X.X`: Specific release versions.
 
