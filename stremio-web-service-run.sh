@@ -4,7 +4,7 @@ CONFIG_FOLDER="${APP_PATH:-${HOME}/.stremio-server/}"
 AUTH_CONF_FILE="/etc/nginx/auth.conf"
 HTPASSWD_FILE="/etc/nginx/.htpasswd"
 
-sed -i 's/df -k/df -Pk/g' server.js
+mkdir -p "${CONFIG_FOLDER}"
 
 if [ -n "${SERVER_URL}" ]; then
     case "$SERVER_URL" in */) ;; *)
@@ -116,6 +116,9 @@ elif [ -n "${CERT_FILE}" ]; then
         node certificate.js --action load --pem-path "/srv/stremio-server/certificates.pem" --domain "${DOMAIN}" --json-path "${CONFIG_FOLDER}httpsCert.json"
     fi
 fi
-node server.js &
-SERVER_PID=$!
+node configure-server-runtime.js
+
+vaapi_preflight || true
+# Prefix EngineFS logs via -r preload; do not patch vendor server.js.
+node --no-deprecation -r ./server-log-prefix.js server.js &
 start_http_server

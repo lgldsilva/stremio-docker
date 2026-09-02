@@ -93,6 +93,9 @@ These options can be configured by setting environment variables using `-e KEY="
 | `DISABLE_CACHING`     | -       | `1`                          | Disable caching for server if set to 1.                                                                                                                                                                      |                  
 | `VAAPI_PREFLIGHT`     | 1       | `0`                          | Enables/disables the startup VA-API DRM render-node probe. Set to `0` to suppress all preflight output (see Troubleshooting hardware acceleration).                                                          |
 | `VAAPI_PREFLIGHT_DEBUG` | 0     | `1`                          | When `1`, prints the full ffmpeg stderr for each DRM node probed at startup (see Troubleshooting hardware acceleration).                                                                                    |
+| `HWACCEL_BACKEND`     | `auto`  | `nvidia`                     | Hardware backend mode: `auto`, `nvidia`, `vaapi`, or `none`. In `auto`, runtime chooses based on available devices.                                                                                                    |
+| `HWACCEL_PROFILE`     | -       | `nvenc-linux`                | Optional explicit transcode profile. When unset, defaults are `nvenc-linux` for NVIDIA and `vaapi` for VAAPI.                                                                                                         |
+| `NVIDIA_COMPAT_PATCH` | `1`     | `0`                          | Enables/disables NVIDIA compatibility patching in `server.js` (helpful for older cards and 10-bit streams).                                                                                                           |
 
 There are multiple other options defined but probably best not setting any.
 
@@ -203,6 +206,13 @@ We build our own ffmpeg from the jellyfin repo (version 4.4.1-4), which includes
 - Optimized for streaming workloads
 
 On **Linux**, hardware acceleration is used when the GPU is available to the container. To enable it, you must expose your GPU device to the container.
+
+This fork auto-detects the backend (`HWACCEL_BACKEND=auto`). You can force a mode with:
+- `HWACCEL_BACKEND=nvidia`
+- `HWACCEL_BACKEND=vaapi`
+- `HWACCEL_BACKEND=none`
+
+To enable VAAPI, expose `/dev/dri`. For NVIDIA, use the NVIDIA runtime/toolkit.
 
 **Windows and macOS**
 

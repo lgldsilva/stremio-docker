@@ -18,9 +18,8 @@ services:
       - "8085:8080"
     volumes:
       - "/mnt/lvm1-storage/.stremio-server:/root/.stremio-server"
-    extra_hosts:
-      - "stremio.raspberrypi.lan:192.168.0.100"
-      - "raspberrypi.lan:192.168.0.100"
+    dns:
+      - 192.168.0.100
     deploy:
       resources:
         limits:

@@ -2,7 +2,7 @@ services:
   stremio:
     build:
       context: .
-      dockerfile: Dockerfile.nvidia
+      dockerfile: ${STREMIO_DOCKERFILE:-Dockerfile}
     image: local/stremio-simple:latest
     restart: unless-stopped
     environment:
@@ -11,9 +11,9 @@ services:
       - IPADDRESS=192.168.0.100
       - SERVER_URL=https://192.168.0.100:8085
       - WEBUI_INTERNAL_PORT=8080
+      - HWACCEL_BACKEND=auto
+      - NVIDIA_COMPAT_PATCH=1
     ports:
       - "8085:8080"
     volumes:
       - "/mnt/lvm1-storage/.stremio-server:/root/.stremio-server"
-    # Usar o NVIDIA Container Runtime
-    runtime: nvidia

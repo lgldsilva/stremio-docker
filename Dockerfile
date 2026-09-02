@@ -82,6 +82,10 @@ WORKDIR /srv/stremio-web
 RUN sed -i "s#const COMMIT_HASH = execSync('git rev-parse HEAD').toString().trim();#const GIT_COMMIT = execSync('git rev-parse HEAD').toString().trim();\\nconst BUILD_LABEL = process.env.COMMIT_HASH ? String(process.env.COMMIT_HASH).replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/-+/g, '-').replace(/^-+|-+\$/g, '') : '';\\nconst COMMIT_HASH = BUILD_LABEL ? BUILD_LABEL + '-' + GIT_COMMIT : GIT_COMMIT;\\nprocess.env.COMMIT_HASH = COMMIT_HASH;#" webpack.config.js
 
 COPY ./load_localStorage.js ./src/load_localStorage.js
+COPY ./stremio-web-overrides/src/routes/Player/useStatistics.ts ./src/routes/Player/useStatistics.ts
+COPY ./stremio-web-overrides/src/routes/Player/Player.js ./src/routes/Player/Player.js
+COPY ./stremio-web-overrides/src/routes/Player/Error/Error.js ./src/routes/Player/Error/Error.js
+COPY ./stremio-web-overrides/src/routes/Player/Error/styles.less ./src/routes/Player/Error/styles.less
 RUN sed -i "/entry: {/a \\        loader: './src/load_localStorage.js'," webpack.config.js
 
 RUN npm install -g pnpm@11 --force
@@ -111,6 +115,7 @@ RUN apk add --no-cache nginx apache2-utils
 
 COPY ./nginx/ /etc/nginx/
 COPY ./stremio-web-service-run.sh ./
+COPY ./configure-server-runtime.js ./
 COPY ./certificate.js ./
 COPY ./server-log-prefix.js ./
 RUN chmod +x stremio-web-service-run.sh
