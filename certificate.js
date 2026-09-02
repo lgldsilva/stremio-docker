@@ -2,6 +2,59 @@ const fs = require('fs');
 const process = require('process');
 const path = require('path');
 const crypto = require('crypto');
+
+function isValidIPv4(ipAddress) {
+    return /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/.test(ipAddress);
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 3000) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        return await fetch(url, { ...options, signal: controller.signal });
+    } finally {
+        clearTimeout(timeout);
+    }
+}
+
+async function getPublicIPv4() {
+    const providers = [
+        {
+            url: 'https://ifconfig.me/ip',
+            parse: async (response) => (await response.text()).trim(),
+        },
+        {
+            url: 'https://4.ident.me',
+            parse: async (response) => (await response.text()).trim(),
+        },
+        {
+            url: 'https://4.tnedi.me',
+            parse: async (response) => (await response.text()).trim(),
+        },
+    ];
+
+    const errors = [];
+    for (const provider of providers) {
+        try {
+            const response = await fetchWithTimeout(provider.url, {}, 3000);
+            if (!response.ok) {
+                errors.push(`${provider.url} returned HTTP ${response.status}`);
+                continue;
+            }
+
+            const ipAddress = await provider.parse(response);
+            if (isValidIPv4(ipAddress)) {
+                return ipAddress;
+            }
+
+            errors.push(`${provider.url} returned invalid IPv4: "${ipAddress}"`);
+        } catch (error) {
+            errors.push(`${provider.url} failed: ${error.message}`);
+        }
+    }
+
+    throw new Error(`Unable to detect public IPv4 address from all providers: ${errors.join(' | ')}`);
+}
 // Usage examples:
 // Load certificate:
 // node certificate.js --action load --pem-path /path/to/certificate.pem --domain example.com --json-path /path/to/output.json
@@ -17,11 +70,11 @@ async function getCertificate() {
     let ipAddress = process.env.IPADDRESS;
 
     if (ipAddress === "0-0-0-0") {
-        const publicIp = await fetch('https://api.ipify.org?format=json').then(res => res.json()).then(data => data.ip);
-        ipAddress = publicIp;
+        ipAddress = await getPublicIPv4();
+        fs.writeFileSync('detected-ip.txt', ipAddress);
     }
 
-    if (!/^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/.test(ipAddress)) {
+    if (!isValidIPv4(ipAddress)) {
         throw new Error('Invalid IPv4 address format.');
     }
 
@@ -30,7 +83,7 @@ async function getCertificate() {
     const maxAttempts = Number(process.env.MAXATTEMPTS) || 5;
     while (attempts < maxAttempts) {
         try {
-            const response = await fetch('http://api.strem.io/api/certificateGet', {
+            const response = await fetch('https://api.strem.io/api/certificateGet', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -38,14 +91,15 @@ async function getCertificate() {
                     ipAddress: ipAddress,
                 }),
             });
-            if (!response || !response.ok) {
-                throw new Error(`Failed to fetch certificate.`);
-            }
 
             data = await response.json();
+            if (!response || !response.ok || data.error) {
+                const apiMessage = data?.error?.message || `HTTP ${response?.status}`;
+                throw new Error(`Failed to fetch certificate: ${apiMessage}`);
+            }
             break;
         } catch (error) {
-            console.error(`Failed to fetch certificate. Retrying... (${attempts + 1}/${maxAttempts})`);
+            console.error(`[cert] Failed to fetch certificate. Retrying... (${attempts + 1}/${maxAttempts})`);
             attempts++;
             if (attempts === maxAttempts) {
                 throw new Error(`Failed to fetch certificate after ${maxAttempts} attempts.`);
@@ -76,9 +130,9 @@ async function getCertificate() {
 
     fs.writeFileSync('certificates.pem', combinedCertificates);
 
-    console.log(`Certificates saved successfully! Setup an A record for ${ipAddress} to point to ${ipAddress.replace(/\./g, '-')}.519b6502d940.stremio.rocks`)
+    console.log(`[cert] Certificates saved successfully! Setup an A record for ${ipAddress} to point to ${ipAddress.replace(/\./g, '-')}.519b6502d940.stremio.rocks`)
   } catch (error) {
-    console.error('Error fetching certificate:', error);
+    console.error('[cert] Error fetching certificate:', error);
   }
 }
 
@@ -93,7 +147,7 @@ function parseCommandLineArgs() {
     }
 
     if (!parsedArgs.action || (parsedArgs.action === 'load' && (!parsedArgs['pem-path'] || !parsedArgs.domain || !parsedArgs['json-path'])) || (parsedArgs.action === 'extract' && !parsedArgs['json-path']) || (parsedArgs.action === 'fetch' && Object.keys(parsedArgs).length !== 1)) {
-        console.error('Usage: node certificate.js --action <load|extract|fetch> [--pem-path <path_to_pem_file> --domain <domain_name>] --json-path <path_to_json_file>');
+        console.error('[cert] Usage: node certificate.js --action <load|extract|fetch> [--pem-path <path_to_pem_file> --domain <domain_name>] --json-path <path_to_json_file>');
         process.exit(1);
     }
 
@@ -132,9 +186,9 @@ function loadCertificate(pemPath, domain, jsonPath) {
 
         fs.writeFileSync(jsonPath, JSON.stringify(httpsCertContent, null, 2));
 
-        console.log(`Certificate information saved to ${jsonPath} .`);
+        console.log(`[cert] Certificate information saved to ${jsonPath} .`);
     } catch (error) {
-        console.error(`Error loading certificate: ${error.message} .`);
+        console.error(`[cert] Error loading certificate: ${error.message} .`);
         process.exit(1);
     }
 }
@@ -148,9 +202,9 @@ function extractCertificate(jsonPath) {
         const outputPath = path.join(path.dirname(jsonPath), `${certData.domain}.pem`);
         fs.writeFileSync(outputPath, pemContent);
 
-        console.log(`${certData.domain}`);
+        console.log(`[cert] ${certData.domain}`);
     } catch (error) {
-        console.error(`Error extracting certificate: ${error.message} .`);
+        console.error(`[cert] Error extracting certificate: ${error.message} .`);
         process.exit(1);
     }
 }
@@ -168,6 +222,6 @@ try {
         throw new Error('Invalid action specified!');
     }
 } catch (error) {
-    console.error(`Error: ${error.message}`);
+    console.error(`[cert] Error: ${error.message}`);
     process.exit(1);
 }

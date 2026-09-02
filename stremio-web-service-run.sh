@@ -18,12 +18,16 @@ elif [ -n "${AUTO_SERVER_URL}" ] && [ "${AUTO_SERVER_URL}" -eq 1 ]; then
 fi
 
 if [ -n "${USERNAME}" ] && [ -n "${PASSWORD}" ]; then
-    echo "Setting up HTTP basic authentication..."
-    htpasswd -bc "${HTPASSWD_FILE}" "${USERNAME}" "${PASSWORD}"
+    echo "[auth] Setting up HTTP basic authentication..."
+    if ! htpasswd_msg=$(htpasswd -bc "${HTPASSWD_FILE}" "${USERNAME}" "${PASSWORD}" 2>&1); then
+        echo "[auth] ${htpasswd_msg}"
+        exit 1
+    fi
+    [ -n "${htpasswd_msg}" ] && echo "[auth] ${htpasswd_msg}"
     echo 'auth_basic "Restricted Content";' >"${AUTH_CONF_FILE}"
     echo 'auth_basic_user_file '"${HTPASSWD_FILE}"';' >>"${AUTH_CONF_FILE}"
 else
-    echo "No HTTP basic authentication will be used."
+    echo "[auth] No HTTP basic authentication will be used."
 fi
 
 start_http_server() {
@@ -33,17 +37,77 @@ start_http_server() {
     nginx -g "daemon off;"
 }
 
+# Probe DRM render nodes for a usable VA-API device (issue #141).
+# stremio-server tests its vaapi profile against /dev/dri/renderD128 only and
+# falls back to CPU silently when that handshake fails; on kernels >= 6.1 the
+# iGPU may enumerate as renderD129/card1+ instead.
+vaapi_preflight() {
+    [ "${VAAPI_PREFLIGHT:-1}" = "1" ] || return 0
+    [ -d /dev/dri ] || return 0
+    command -v ffmpeg >/dev/null 2>&1 || return 0
+
+    echo "[vaapi] Probing DRM render nodes..."
+    ok_nodes=""
+    for node in /dev/dri/renderD*; do
+        [ -c "$node" ] || continue
+        if err=$(ffmpeg -nostdin -v error \
+                -init_hw_device vaapi=probe:"$node" \
+                -f lavfi -i "color=c=black:s=256x256:r=1" \
+                -vf "format=nv12,hwupload,hwdownload,format=yuv420p" \
+                -frames:v 1 -f null - 2>&1); then
+            echo "[vaapi] $node: OK"
+            ok_nodes="$ok_nodes $node"
+        else
+            echo "[vaapi] $node: FAILED${err:+: $(printf '%s\n' "$err" | head -n 1)}"
+            if [ "${VAAPI_PREFLIGHT_DEBUG:-0}" = "1" ]; then
+                printf '%s\n' "$err" | sed 's/^/[vaapi] /'
+            fi
+        fi
+    done
+
+    case "$ok_nodes" in
+        *"renderD128"*)
+            echo "[vaapi] /dev/dri/renderD128 is VA-API capable."
+            ;;
+        "")
+            echo "[vaapi] WARNING: no usable VA-API render node found; transcoding will fall back to CPU."
+            drivers=""
+            for drv in /usr/lib/dri/*_drv_video.so /usr/lib/*/dri/*_drv_video.so; do
+                if [ -e "$drv" ]; then
+                    drivers="$drivers $(basename "$drv" _drv_video.so)"
+                fi
+            done
+            echo "[vaapi] Installed libva drivers:${drivers:- none}"
+            echo "[vaapi] Hint: pin LIBVA_DRIVER_NAME (iHD for Intel Gen8+, i965 for older) if the wrong driver loads."
+            ;;
+        *)
+            echo "[vaapi] WARNING: /dev/dri/renderD128 is not VA-API capable but other nodes are."
+            echo "[vaapi] stremio-server probes renderD128 only and will silently fall back to CPU (issue #141)."
+            for n in $ok_nodes; do
+                case "$n" in
+                    *"renderD128"*) ;;
+                    *) echo "[vaapi] Suggested compose remap: \"- /dev/dri/$(basename "$n"):/dev/dri/renderD128\"" ;;
+                esac
+            done
+            ;;
+    esac
+}
+
 if [ -n "${IPADDRESS}" ]; then 
     node certificate.js --action fetch
     EXTRACT_STATUS="$?"
 
     if [ "${EXTRACT_STATUS}" -eq 0 ] && [ -f "/srv/stremio-server/certificates.pem" ]; then
-        IP_DOMAIN=$(echo "${IPADDRESS}" | sed 's/\./-/g')
-        echo "${IPADDRESS} ${IP_DOMAIN}.519b6502d940.stremio.rocks" >> /etc/hosts
+        RESOLVED_IP="${IPADDRESS}"
+        if [ "${IPADDRESS}" = "0-0-0-0" ] && [ -f "/srv/stremio-server/detected-ip.txt" ]; then
+            RESOLVED_IP=$(cat /srv/stremio-server/detected-ip.txt)
+        fi
+        IP_DOMAIN=$(echo "${RESOLVED_IP}" | sed 's/\./-/g')
+        echo "${RESOLVED_IP} ${IP_DOMAIN}.519b6502d940.stremio.rocks" >> /etc/hosts
         cp /etc/nginx/https.conf /etc/nginx/http.d/default.conf
         node certificate.js --action load --pem-path "/srv/stremio-server/certificates.pem" --domain "${IP_DOMAIN}.519b6502d940.stremio.rocks" --json-path "${CONFIG_FOLDER}httpsCert.json"
     else
-        echo "Failed to setup HTTPS. Falling back to HTTP."
+        echo "[cert] Failed to setup HTTPS. Falling back to HTTP."
     fi
 elif [ -n "${CERT_FILE}" ]; then
     if [ -f "${CONFIG_FOLDER}${CERT_FILE}" ]; then
@@ -52,41 +116,6 @@ elif [ -n "${CERT_FILE}" ]; then
         node certificate.js --action load --pem-path "/srv/stremio-server/certificates.pem" --domain "${DOMAIN}" --json-path "${CONFIG_FOLDER}httpsCert.json"
     fi
 fi
-# Force NVENC hw accel: patch server.js to skip the broken auto-test
-# The auto-test always fails (0.2s sample + concurrency race) and disables hw accel.
-# We disable the test and set correct NVENC settings directly.
-if [ -f /usr/bin/nvidia-smi ] 2>/dev/null; then
-    SETTINGS="${CONFIG_FOLDER}server-settings.json"
-
-    # Patch server.js: prevent auto-test from disabling hw accel
-    sed -i 's/transcodeHardwareAccel: !1/transcodeHardwareAccel: !0/g' server.js
-
-    # Patch nvenc-linux profile for 10-bit compatibility (GTX 1070 / Pascal):
-    # 1. Remove -hwaccel_output_format cuda (forces 10-bit CUDA frames → NVENC fails)
-    sed -i 's/"-hwaccel", "cuda", "-hwaccel_output_format", "cuda"/"-hwaccel", "cuda"/' server.js
-    # 2. Remove -init_hw_device/-filter_hw_device (only needed for scale_cuda)
-    sed -i 's/"-init_hw_device", "cuda=cu:0", "-filter_hw_device", "cu", "-hwaccel"/"-hwaccel"/' server.js
-    # 3. Use CPU scale instead of scale_cuda (CUDA frames auto-downloaded by ffmpeg)
-    sed -i 's/scale: "scale_cuda"/scale: !1/' server.js
-    # 4. Restore lanczos scaler flags for CPU scale
-    sed -i '/nvenc/,/vaapi/{s/scaleExtra: ""/scaleExtra: ":flags=lanczos"/}' server.js
-    # 5. Disable wrapSwFilters (no hwdownload/hwupload needed with CPU scale)
-    sed -i 's/wrapSwFilters: \[ "hwdownload", "hwupload_cuda" \]/wrapSwFilters: !1/' server.js
-
-    echo "NVENC: patched server.js (auto-test + 10-bit compat + CPU scale)"
-
-    # Set NVENC settings in config file
-    if [ -f "$SETTINGS" ]; then
-        sed -i \
-            -e 's/"transcodeHardwareAccel": false/"transcodeHardwareAccel": true/' \
-            -e 's/"transcodeProfile": null/"transcodeProfile": "nvenc-linux"/' \
-            -e 's/"allTranscodeProfiles": \[\]/"allTranscodeProfiles": ["nvenc-linux"]/' \
-            "$SETTINGS"
-        echo "NVENC: settings configured (transcodeHardwareAccel: true, profile: nvenc-linux)"
-    fi
-fi
-
 node server.js &
 SERVER_PID=$!
-
 start_http_server
