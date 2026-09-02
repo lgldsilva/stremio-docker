@@ -121,6 +121,7 @@ COPY --from=builder-web /srv/stremio-web/server.js ./
 COPY ./nginx/ /etc/nginx/
 COPY ./stremio-web-service-run.sh ./
 COPY ./configure-server-runtime.js ./
+COPY ./server-log-prefix.js ./
 COPY ./certificate.js ./
 RUN chmod +x stremio-web-service-run.sh
 COPY ./restart_if_idle.sh ./
